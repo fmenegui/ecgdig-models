@@ -1,0 +1,71 @@
+# Publishes the model of one training run of fmenegui/ecg-digitalization-classic as a release here.
+#
+# The run's artifact (gpu-<tag>-<run>) is downloaded from that public repository; its log is
+# checked, and a model trained on pages of the Kaggle competition (real strips, the Kaggle token) is
+# refused: this repository is public. Release body = the description given + the training command,
+# code commit and final validation read from the log.
+name: Release a model
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: gpu-train.yml run of ecg-digitalization-classic
+        required: true
+      release_tag:
+        description: e.g. page-v3
+        required: true
+      title:
+        description: e.g. Page structure v3
+        required: true
+      files:
+        description: files of the artifact to attach, space separated
+        default: page_best.onnx page_best.pt val.json
+      notes:
+        description: one paragraph on what the model is and how it was trained
+        default: ''
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN: ${{ inputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Artifact of the training run
+        run: |
+          case "$RUN" in (*[!0-9]*|'') echo "run_id must be a number"; exit 1;; esac
+          gh run download "$RUN" -R fmenegui/ecg-digitalization-classic -D dl
+          find dl -type f | sed 's/^/  /'
+      - name: Refuse models trained on Kaggle competition pages
+        run: |
+          L=$(find dl -name log.txt | head -1)
+          [ -n "$L" ] || { echo "no training log in the artifact"; exit 1; }
+          if grep -qE "realstrips|--real-dir|kaggle_zip" "$L"; then
+            echo "this run trained on Kaggle competition pages: not published in a public repository"; exit 1
+          fi
+      - name: Release
+        run: |
+          L=$(find dl -name log.txt | head -1)
+          {
+            echo "${{ inputs.notes }}"
+            echo
+            echo "- Training run: [fmenegui/ecg-digitalization-classic run $RUN](https://github.com/fmenegui/ecg-digitalization-classic/actions/runs/$RUN)"
+            echo "- Code: $(grep -m1 -aE '^[0-9a-f]{7} ' "$L" || echo unknown)"
+            echo "- Steps: $(grep -a '^done' "$L" | tail -1)"
+            echo "- Best validation score: $(grep -a '^best' "$L" | tail -1)"
+            echo "- Final validation: \`$(grep -a 'final val' "$L" | tail -1)\`"
+            echo
+            echo "Command:"
+            echo
+            echo '```'
+            grep -a -m1 '^command:' "$L" | sed 's/^command: //'
+            echo '```'
+          } > notes.md
+          cat notes.md
+          F=""
+          for f in ${{ inputs.files }}; do
+            p=$(find dl -name "$f" | head -1); [ -n "$p" ] && F="$F $p" || echo "missing $f"
+          done
+          gh release create "${{ inputs.release_tag }}" $F -t "${{ inputs.title }}" -F notes.md --target main
